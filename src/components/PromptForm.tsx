@@ -6,6 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
+import { generateManimCode } from "@/lib/gemini";
+import { executeManimCode } from "@/lib/manimExecutor";
 
 interface PromptFormProps {
   onStart?: () => void;
@@ -16,25 +18,10 @@ interface PromptFormProps {
 
 const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps) => {
   const [prompt, setPrompt] = useState("");
-  const [model, setModel] = useState("gemini-1.5-pro");
+  const [model, setModel] = useState("gemini-2.0-flash");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
-
-  const simulateProgress = async () => {
-    const steps = [
-      { p: 25, s: "Generating Manim code with AI" },
-      { p: 60, s: "Rendering frames" },
-      { p: 85, s: "Encoding video" },
-      { p: 100, s: "Finalizing" },
-    ];
-    for (const step of steps) {
-      await new Promise((r) => setTimeout(r, 700));
-      setProgress(step.p);
-      setStatus(step.s);
-      onProgress?.(step.s);
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,60 +31,95 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
     }
 
     setLoading(true);
-    setProgress(10);
+    setProgress(0);
     setStatus("Starting generation");
     onStart?.();
 
-    try {
-      const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-      const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
+    const maxRetries = 2; // Allow 2 retries for code generation
+    let currentAttempt = 0;
 
-      if (!url || !key) {
-        throw new Error("Supabase not connected");
+    while (currentAttempt <= maxRetries) {
+      try {
+        // Step 1: Generate Manim code with AI
+        const attemptMsg = currentAttempt > 0 ? ` (Attempt ${currentAttempt + 1})` : "";
+        setStatus(`Generating Manim code with AI${attemptMsg}`);
+        setProgress(15);
+        onProgress?.(`Generating Manim code with AI${attemptMsg}`);
+
+        const result = await generateManimCode(prompt, model);
+        
+        if (!result.code) {
+          throw new Error("No code generated");
+        }
+
+        setStatus("Code generated, preparing video rendering");
+        setProgress(25);
+        onProgress?.("Code generated, preparing video rendering");
+
+        // Step 2: Execute Manim code and generate video
+        const videoResult = await executeManimCode(
+          result.code,
+          (videoProgress, videoStatus) => {
+            // Map video generation progress to overall progress (25-100%)
+            const overallProgress = 25 + (videoProgress * 0.75);
+            setProgress(overallProgress);
+            setStatus(videoStatus);
+            onProgress?.(videoStatus);
+          }
+        );
+
+        console.log('Video execution result:', videoResult);
+
+        if (!videoResult.success) {
+          const errorMessage = videoResult.error || "Video generation failed";
+          console.error('Video generation failed:', errorMessage);
+          
+          // Check if it's a syntax error that we can retry
+          if (currentAttempt < maxRetries && (
+            errorMessage.includes("TypeError") || 
+            errorMessage.includes("SyntaxError") ||
+            errorMessage.includes("move_to")
+          )) {
+            console.log(`Retrying due to syntax error. Attempt ${currentAttempt + 1} of ${maxRetries}`);
+            currentAttempt++;
+            continue; // Retry with improved prompt
+          }
+          
+          // Still show the code even if video generation failed
+          if (result.code) {
+            toast.error(`Video generation failed: ${errorMessage}. Showing code instead.`);
+            onSuccess?.("", result.code);
+            return;
+          }
+          
+          throw new Error(errorMessage);
+        }
+
+        // Success - break out of retry loop
+        if (videoResult.videoUrl) {
+          toast.success("Video generated successfully!");
+          onSuccess?.(videoResult.videoUrl, result.code);
+        } else {
+          toast.info("Code generated successfully, but no video URL returned. Showing code preview.");
+          onSuccess?.("", result.code);
+        }
+        
+        return; // Exit successfully
+
+      } catch (error: unknown) {
+        console.error(`Error in video generation (attempt ${currentAttempt + 1}):`, error);
+        
+        if (currentAttempt < maxRetries) {
+          currentAttempt++;
+          continue; // Try again
+        }
+        
+        // Final attempt failed
+        const msg = error instanceof Error ? error.message : "Failed to generate video";
+        toast.error(`${msg} (after ${maxRetries + 1} attempts)`);
+        onError?.(msg);
+        return;
       }
-
-      onProgress?.("Generating Manim code with AI");
-      setStatus("Generating Manim code with AI");
-      setProgress(30);
-
-      const res = await fetch(`${url}/functions/v1/generate-manim-video`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({ prompt, model }),
-      });
-
-      if (!res.ok) {
-        throw new Error(await res.text());
-      }
-
-      setStatus("Rendering video");
-      setProgress(70);
-
-      const data = await res.json();
-      const videoUrl = data.videoUrl as string | undefined;
-      const code = data.code as string | undefined;
-
-      setStatus("Done");
-      setProgress(100);
-
-      if (videoUrl) {
-        toast.success("Video ready!");
-        onSuccess?.(videoUrl, code);
-      } else {
-        toast.info("Received response, but no video URL. Showing preview placeholder.");
-        onSuccess?.("", code);
-      }
-    } catch (err: any) {
-      await simulateProgress();
-      const msg =
-        "Backend not connected yet. Click the Supabase button (top-right) to connect, then try again.";
-      toast.warning(msg);
-      onError?.(msg);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -124,8 +146,8 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
                   <SelectValue placeholder="Select a model" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="gemini-1.5-pro">Gemini 1.5 Pro</SelectItem>
-                  <SelectItem value="gemini-1.5-flash">Gemini 1.5 Flash</SelectItem>
+                  <SelectItem value="gemini-2.0-flash">gemini-2.0-flash</SelectItem>
+                  <SelectItem value="gemini-1.5-pro">gemini-1.5-pro</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -134,7 +156,7 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
               <div className="grid gap-2">
                 <div className="flex items-center justify-between text-sm text-muted-foreground">
                   <span>{status}</span>
-                  <span>{progress}%</span>
+                  <span>{Math.round(progress)}%</span>
                 </div>
                 <Progress value={progress} />
               </div>
@@ -142,13 +164,16 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
 
             <div className="flex gap-3">
               <Button type="submit" variant="hero" className="flex-1" disabled={loading}>
-                Generate video
+                {loading ? "Generating..." : "Generate video"}
               </Button>
-              <Button type="button" variant="outline" onClick={() => setPrompt("")}>Clear</Button>
+              <Button type="button" variant="outline" onClick={() => setPrompt("")} disabled={loading}>
+                Clear
+              </Button>
             </div>
 
             <p id="how-it-works" className="mt-2 text-xs text-muted-foreground">
-              We generate Manim Python code from your prompt using the selected model, then render and stream the video back.
+              We generate Manim Python code from your prompt, then execute it to create and render the animation video.
+              The system will automatically retry if there are syntax errors.
             </p>
           </form>
         </CardContent>
