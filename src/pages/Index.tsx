@@ -1,63 +1,109 @@
 import { useState, useRef } from "react";
+import { Button } from "@/components/ui/button";
 import SEO from "@/components/SEO";
 import HeroSection from "@/components/HeroSection";
 import PromptForm from "@/components/PromptForm";
 import VideoPreview from "@/components/VideoPreview";
+import { AuthModal } from "@/components/AuthModal";
+import { useAuth } from "@/contexts/AuthContext";
 
 const Index = () => {
-  const [videoUrl, setVideoUrl] = useState<string>("");
-  const [code, setCode] = useState<string | undefined>(undefined);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [generatedCode, setGeneratedCode] = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const { user, signOut } = useAuth();
   const formRef = useRef<HTMLDivElement>(null);
 
+  const handleStart = () => {
+    setVideoUrl(null);
+    setGeneratedCode(null);
+    setIsGenerating(true);
+  };
+
+  const handleSuccess = (url: string, code?: string) => {
+    setVideoUrl(url);
+    setGeneratedCode(code || null);
+    setIsGenerating(false);
+  };
+
+  const handleError = (message: string) => {
+    console.error(message);
+    setIsGenerating(false);
+  };
+
+  const handleAuthAction = () => {
+    if (user) {
+      signOut();
+    } else {
+      setAuthModalOpen(true);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-purple-900">
       <SEO
-        title="DSA Video Visualizer | Manim-powered Explanations"
-        description="Turn DSA prompts into crisp Manim videos. Paste a LeetCode problem and get an AI-generated visualization."
-        canonical="/"
-        jsonLd={{
-          "@context": "https://schema.org",
-          "@type": "WebSite",
-          name: "DSA Video Visualizer",
-          url: "/",
-          potentialAction: {
-            "@type": "SearchAction",
-            target: "/?q={search_term_string}",
-            "query-input": "required name=search_term_string",
-          },
-        }}
+        title="Prompt to Animagic - AI-Powered Algorithm Visualizations"
+        description="Transform any algorithm or data structure problem into stunning Manim animations using AI. Generate educational videos instantly."
       />
 
-      <HeroSection onCTAClick={() => formRef.current?.scrollIntoView({ behavior: "smooth" })} />
-
-      <main>
-        <div ref={formRef}>
-          <PromptForm
-            onSuccess={(url, generatedCode) => {
-              setVideoUrl(url);
-              setCode(generatedCode);
-            }}
-          />
-        </div>
-        <VideoPreview videoUrl={videoUrl} code={code} />
-
-        <section className="mx-auto my-16 w-full max-w-4xl px-4">
-          <div className="grid gap-6 sm:grid-cols-3">
-            <article className="rounded-lg border bg-card p-5 shadow-sm">
-              <h3 className="font-medium">1. Prompt</h3>
-              <p className="mt-1 text-sm text-muted-foreground">Paste a DSA problem statement or describe the visualization you need.</p>
-            </article>
-            <article className="rounded-lg border bg-card p-5 shadow-sm">
-              <h3 className="font-medium">2. Generate</h3>
-              <p className="mt-1 text-sm text-muted-foreground">We ask the AI for Manim code tailored to your prompt and render it.</p>
-            </article>
-            <article className="rounded-lg border bg-card p-5 shadow-sm">
-              <h3 className="font-medium">3. Watch & Share</h3>
-              <p className="mt-1 text-sm text-muted-foreground">Preview the result, download the Python, and share the video.</p>
-            </article>
+      <div className="container mx-auto px-4 py-8">
+        <div className="flex justify-between items-center mb-8">
+          <div className="flex items-center space-x-4">
+            <h1 className="text-2xl font-bold text-white">Prompt to Animagic</h1>
           </div>
-        </section>
-      </main>
+          <div className="flex items-center space-x-4">
+            {user && (
+              <span className="text-white text-sm">
+                Welcome, {user.email}
+              </span>
+            )}
+            <Button onClick={handleAuthAction} variant="outline">
+              {user ? 'Sign Out' : 'Sign In'}
+            </Button>
+          </div>
+        </div>
+
+        <HeroSection onCTAClick={() => formRef.current?.scrollIntoView({ behavior: "smooth" })} />
+
+        <main>
+          <div ref={formRef}>
+            {user ? (
+              <>
+                <PromptForm
+                  onStart={handleStart}
+                  onSuccess={handleSuccess}
+                  onError={handleError}
+                />
+                <VideoPreview
+                  videoUrl={videoUrl}
+                  code={generatedCode}
+                  isGenerating={isGenerating}
+                />
+              </>
+            ) : (
+              <div className="text-center mt-12">
+                <div className="bg-white/10 backdrop-blur-sm border border-white/20 rounded-lg p-8 max-w-md mx-auto">
+                  <h3 className="text-xl font-semibold text-white mb-4">
+                    Sign in to start generating videos
+                  </h3>
+                  <p className="text-gray-300 mb-6">
+                    Create an account to generate and save your algorithm visualizations.
+                  </p>
+                  <Button onClick={() => setAuthModalOpen(true)} className="w-full">
+                    Get Started
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </main>
+      </div>
+
+      <AuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+      />
     </div>
   );
 };

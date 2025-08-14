@@ -8,6 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { generateManimCode } from "@/lib/gemini";
 import { executeManimCode } from "@/lib/manimExecutor";
+import { uploadVideoToSupabase } from "@/lib/videoStorage";
 
 interface PromptFormProps {
   onStart?: () => void;
@@ -35,7 +36,7 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
     setStatus("Starting generation");
     onStart?.();
 
-    const maxRetries = 2; // Allow 2 retries for code generation
+    const maxRetries = 2;
     let currentAttempt = 0;
 
     while (currentAttempt <= maxRetries) {
@@ -60,8 +61,7 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
         const videoResult = await executeManimCode(
           result.code,
           (videoProgress, videoStatus) => {
-            // Map video generation progress to overall progress (25-100%)
-            const overallProgress = 25 + (videoProgress * 0.75);
+            const overallProgress = 25 + (videoProgress * 0.65); // Reserve 10% for upload
             setProgress(overallProgress);
             setStatus(videoStatus);
             onProgress?.(videoStatus);
@@ -74,7 +74,6 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
           const errorMessage = videoResult.error || "Video generation failed";
           console.error('Video generation failed:', errorMessage);
           
-          // Check if it's a syntax error that we can retry
           if (currentAttempt < maxRetries && (
             errorMessage.includes("TypeError") || 
             errorMessage.includes("SyntaxError") ||
@@ -82,42 +81,78 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
           )) {
             console.log(`Retrying due to syntax error. Attempt ${currentAttempt + 1} of ${maxRetries}`);
             currentAttempt++;
-            continue; // Retry with improved prompt
+            continue;
           }
           
-          // Still show the code even if video generation failed
           if (result.code) {
             toast.error(`Video generation failed: ${errorMessage}. Showing code instead.`);
             onSuccess?.("", result.code);
+            setLoading(false);
             return;
           }
           
           throw new Error(errorMessage);
         }
 
-        // Success - break out of retry loop
+        // Step 3: Upload video to Supabase
         if (videoResult.videoUrl) {
-          toast.success("Video generated successfully!");
-          onSuccess?.(videoResult.videoUrl, result.code);
+          setStatus("Uploading video to cloud storage...");
+          setProgress(90);
+          onProgress?.("Uploading video to cloud storage...");
+
+          try {
+            // Fetch the video file from local server
+            const videoResponse = await fetch(videoResult.videoUrl);
+            if (!videoResponse.ok) {
+              throw new Error('Failed to fetch video file');
+            }
+            
+            const videoBlob = await videoResponse.blob();
+            const fileName = `animation_${Date.now()}.mp4`;
+            
+            // Extract title from prompt (first 50 characters)
+            const title = prompt.substring(0, 50).trim() + (prompt.length > 50 ? '...' : '');
+            
+            const uploadResult = await uploadVideoToSupabase(videoBlob, fileName, {
+              title,
+              prompt,
+              code: result.code
+            });
+
+            if (uploadResult) {
+              setProgress(100);
+              setStatus("Video uploaded successfully!");
+              toast.success("Video generated and saved successfully!");
+              onSuccess?.(uploadResult.video_url, result.code);
+            } else {
+              toast.warning("Video generated but upload failed. Showing local version.");
+              onSuccess?.(videoResult.videoUrl, result.code);
+            }
+          } catch (uploadError) {
+            console.error('Upload error:', uploadError);
+            toast.warning("Video generated but upload failed. Showing local version.");
+            onSuccess?.(videoResult.videoUrl, result.code);
+          }
         } else {
-          toast.info("Code generated successfully, but no video URL returned. Showing code preview.");
+          toast.info("Code generated successfully. Showing code preview.");
           onSuccess?.("", result.code);
         }
         
-        return; // Exit successfully
+        setLoading(false);
+        return;
 
       } catch (error: unknown) {
         console.error(`Error in video generation (attempt ${currentAttempt + 1}):`, error);
         
         if (currentAttempt < maxRetries) {
           currentAttempt++;
-          continue; // Try again
+          continue;
         }
         
-        // Final attempt failed
         const msg = error instanceof Error ? error.message : "Failed to generate video";
         toast.error(`${msg} (after ${maxRetries + 1} attempts)`);
         onError?.(msg);
+        setLoading(false);
         return;
       }
     }
@@ -171,9 +206,9 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
               </Button>
             </div>
 
-            <p id="how-it-works" className="mt-2 text-xs text-muted-foreground">
+            <p className="mt-2 text-xs text-muted-foreground">
               We generate Manim Python code from your prompt, then execute it to create and render the animation video.
-              The system will automatically retry if there are syntax errors.
+              Videos are automatically saved to your account.
             </p>
           </form>
         </CardContent>

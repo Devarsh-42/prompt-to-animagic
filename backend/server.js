@@ -311,7 +311,7 @@ app.post("/api/execute-manim", async (req, res) => {
           return;
         }
 
-        sendProgress(90, "Finalizing video");
+        sendProgress(85, "Searching for generated video...");
 
         // Find the generated video file
         const videoFiles = await fs.readdir(outputDir);
@@ -330,20 +330,25 @@ app.post("/api/execute-manim", async (req, res) => {
           return;
         }
 
+        sendProgress(95, "Video file found, finalizing...");
+
         const videoPath = path.join(outputDir, videoFile);
         const videoUrl = `/videos/${videoFile}`;
 
         console.log("Video generated successfully:", videoFile);
 
-        sendProgress(100, "Video ready");
+        sendProgress(100, "Video ready!");
 
-        sendComplete({
-          success: true,
-          videoUrl: `http://localhost:${PORT}${videoUrl}`,
-          videoPath,
-          logs,
-          code: code,
-        });
+        // Add a small delay to ensure the 100% progress is visible
+        setTimeout(() => {
+          sendComplete({
+            success: true,
+            videoUrl: `http://localhost:${PORT}${videoUrl}`,
+            videoPath,
+            logs,
+            code: code,
+          });
+        }, 500);
       } catch (error) {
         console.error("Post-processing error:", error);
         sendError(`Post-processing error: ${error.message}`);
