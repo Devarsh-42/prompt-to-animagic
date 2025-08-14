@@ -19,7 +19,7 @@ interface PromptFormProps {
 
 const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps) => {
   const [prompt, setPrompt] = useState("");
-  const [model, setModel] = useState("gemini-2.0-flash");
+  const [model, setModel] = useState("gemini-2.0-flash-exp");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
@@ -61,7 +61,8 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
         const videoResult = await executeManimCode(
           result.code,
           (videoProgress, videoStatus) => {
-            const overallProgress = 25 + (videoProgress * 0.65); // Reserve 10% for upload
+            // Reserve 25% for upload to Supabase
+            const overallProgress = 25 + (videoProgress * 0.50);
             setProgress(overallProgress);
             setStatus(videoStatus);
             onProgress?.(videoStatus);
@@ -94,24 +95,38 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
           throw new Error(errorMessage);
         }
 
-        // Step 3: Upload video to Supabase
+        // Step 3: Upload video to Supabase (this is the key part!)
         if (videoResult.videoUrl) {
-          setStatus("Uploading video to cloud storage...");
-          setProgress(90);
-          onProgress?.("Uploading video to cloud storage...");
+          setStatus("Downloading video from server...");
+          setProgress(75);
+          onProgress?.("Downloading video from server...");
 
           try {
             // Fetch the video file from local server
+            console.log('Fetching video from:', videoResult.videoUrl);
             const videoResponse = await fetch(videoResult.videoUrl);
+            
             if (!videoResponse.ok) {
-              throw new Error('Failed to fetch video file');
+              throw new Error(`Failed to fetch video: ${videoResponse.status} ${videoResponse.statusText}`);
             }
             
             const videoBlob = await videoResponse.blob();
+            console.log('Video blob size:', videoBlob.size, 'bytes');
+            
+            if (videoBlob.size === 0) {
+              throw new Error('Downloaded video file is empty');
+            }
+
+            setStatus("Uploading to cloud storage...");
+            setProgress(85);
+            onProgress?.("Uploading to cloud storage...");
+            
             const fileName = `animation_${Date.now()}.mp4`;
             
             // Extract title from prompt (first 50 characters)
             const title = prompt.substring(0, 50).trim() + (prompt.length > 50 ? '...' : '');
+            
+            console.log('Uploading to Supabase with metadata:', { title, fileName });
             
             const uploadResult = await uploadVideoToSupabase(videoBlob, fileName, {
               title,
@@ -120,26 +135,41 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
             });
 
             if (uploadResult) {
-              setProgress(100);
-              setStatus("Video uploaded successfully!");
-              toast.success("Video generated and saved successfully!");
-              onSuccess?.(uploadResult.video_url, result.code);
+              setProgress(95);
+              setStatus("Upload successful, finalizing...");
+              
+              console.log('Upload successful:', uploadResult);
+              
+              // Small delay to show completion
+              setTimeout(() => {
+                setProgress(100);
+                setStatus("Video ready in cloud storage!");
+                toast.success("Video generated and saved to your account!");
+                onSuccess?.(uploadResult.video_url, result.code);
+                setLoading(false);
+              }, 500);
             } else {
+              console.warn('Upload failed, falling back to local video');
               toast.warning("Video generated but upload failed. Showing local version.");
+              setProgress(100);
               onSuccess?.(videoResult.videoUrl, result.code);
+              setLoading(false);
             }
           } catch (uploadError) {
             console.error('Upload error:', uploadError);
-            toast.warning("Video generated but upload failed. Showing local version.");
+            toast.error(`Upload failed: ${uploadError.message}. Showing local version.`);
+            setProgress(100);
             onSuccess?.(videoResult.videoUrl, result.code);
+            setLoading(false);
           }
         } else {
           toast.info("Code generated successfully. Showing code preview.");
+          setProgress(100);
           onSuccess?.("", result.code);
+          setLoading(false);
         }
         
-        setLoading(false);
-        return;
+        return; // Exit the retry loop on success
 
       } catch (error: unknown) {
         console.error(`Error in video generation (attempt ${currentAttempt + 1}):`, error);
@@ -159,7 +189,7 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
   };
 
   return (
-    <section aria-labelledby="generator" className="mx-auto mt-8 w-full max-w-3xl">
+    <section aria-labelledby="generator" className="mx-auto mt-8 w-full max-w-4xl"> {/* adjusted to match VideoPreview */}
       <Card>
         <CardContent className="p-6">
           <form onSubmit={handleSubmit} className="grid gap-4">
@@ -170,7 +200,7 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 placeholder="Paste a LeetCode problem statement or describe the algorithm you want visualized..."
-                className="min-h-32"
+                className="min-h-[220px] resize-y" /* taller consistent height */
               />
             </div>
 
@@ -181,7 +211,7 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
                   <SelectValue placeholder="Select a model" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="gemini-2.0-flash">gemini-2.0-flash</SelectItem>
+                  <SelectItem value="gemini-2.0-flash-exp">gemini-2.0-flash-exp (Latest)</SelectItem>
                   <SelectItem value="gemini-1.5-pro">gemini-1.5-pro</SelectItem>
                 </SelectContent>
               </Select>
@@ -198,7 +228,7 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
             )}
 
             <div className="flex gap-3">
-              <Button type="submit" variant="hero" className="flex-1" disabled={loading}>
+              <Button type="submit" className="flex-1 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600" disabled={loading}>
                 {loading ? "Generating..." : "Generate video"}
               </Button>
               <Button type="button" variant="outline" onClick={() => setPrompt("")} disabled={loading}>
@@ -208,7 +238,7 @@ const PromptForm = ({ onStart, onProgress, onSuccess, onError }: PromptFormProps
 
             <p className="mt-2 text-xs text-muted-foreground">
               We generate Manim Python code from your prompt, then execute it to create and render the animation video.
-              Videos are automatically saved to your account.
+              Videos are automatically saved to your cloud storage account.
             </p>
           </form>
         </CardContent>

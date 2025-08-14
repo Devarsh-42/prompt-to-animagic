@@ -11,17 +11,46 @@ app.use(cors());
 app.use(express.json());
 app.use("/videos", express.static(path.join(__dirname, "generated_videos")));
 
+// Helper function to find video files recursively
+const findVideoFiles = async (dir, fileName) => {
+  try {
+    const files = [];
+
+    const searchRecursively = async (currentDir) => {
+      const items = await fs.readdir(currentDir, { withFileTypes: true });
+
+      for (const item of items) {
+        const fullPath = path.join(currentDir, item.name);
+
+        if (item.isDirectory()) {
+          await searchRecursively(fullPath);
+        } else if (
+          item.isFile() &&
+          item.name.endsWith(".mp4") &&
+          item.name.includes(fileName)
+        ) {
+          files.push(fullPath);
+        }
+      }
+    };
+
+    await searchRecursively(dir);
+    return files;
+  } catch (error) {
+    console.error("Error searching for video files:", error);
+    return [];
+  }
+};
+
 // Check if Manim is available
 const checkManimAvailability = () => {
   return new Promise((resolve) => {
-    // Try python -m manim first (more reliable on Windows)
     const testProcess = spawn("python", ["-m", "manim", "--version"], {
       stdio: "pipe",
     });
 
     testProcess.on("error", () => {
       console.log("Python -m manim not found, trying direct manim command");
-      // Fallback to direct manim command
       const fallbackProcess = spawn("manim", ["--version"], { stdio: "pipe" });
 
       fallbackProcess.on("error", () => {
@@ -49,13 +78,11 @@ const checkManimAvailability = () => {
 // Get the correct Manim command
 const getManimCommand = async () => {
   return new Promise((resolve) => {
-    // Try python -m manim first
     const testProcess = spawn("python", ["-m", "manim", "--version"], {
       stdio: "pipe",
     });
 
     testProcess.on("error", () => {
-      // Fallback to direct manim command
       resolve(["manim"]);
     });
 
@@ -154,6 +181,95 @@ const createMockVideo = async (fileName, outputDir) => {
   return `${fileName}.html`;
 };
 
+// Helper: attempt a safe, context-aware bracket balancer to fix common mismatched bracket/paren errors
+// Notes:
+// - Minimal parser: ignores characters inside single/double/triple quotes to avoid touching string content.
+// - When a closing bracket doesn't match the last opener, it replaces the closing with the expected one.
+// - If openers remain at EOF, it appends the required closers.
+// This is a heuristic fixer (not perfect) but fixes common generator bugs like `move_to([axes.c2p(...)))`.
+const smartBalanceBrackets = (src) => {
+  const openToClose = { "(": ")", "[": "]", "{": "}" };
+  const closeToOpen = { ")": "(", "]": "[", "}": "{" };
+  const chars = Array.from(src);
+  const stack = [];
+  let i = 0;
+
+  // simple string literal state tracking
+  let inSingle = false;
+  let inDouble = false;
+  let inTripleSingle = false;
+  let inTripleDouble = false;
+
+  while (i < chars.length) {
+    const ch = chars[i];
+    const next2 = i + 2 < chars.length ? chars[i + 1] + chars[i + 2] : "";
+
+    // handle triple quotes start/end
+    if (!inSingle && !inDouble) {
+      if (!inTripleSingle && ch === "'" && next2 === "''") {
+        inTripleSingle = true;
+        i += 1; // will advance normally; still mark state
+      } else if (inTripleSingle && ch === "'" && next2 === "''") {
+        inTripleSingle = false;
+        i += 1;
+      } else if (!inTripleDouble && ch === '"' && next2 === '""') {
+        inTripleDouble = true;
+        i += 1;
+      } else if (inTripleDouble && ch === '"' && next2 === '""') {
+        inTripleDouble = false;
+        i += 1;
+      }
+    }
+
+    // skip any bracket handling if inside any string/triple string
+    if (inSingle || inDouble || inTripleSingle || inTripleDouble) {
+      // toggle single/double if it's starting/ending (and not escaped)
+      if (!inTripleSingle && !inTripleDouble) {
+        if (ch === "'" && !inDouble) {
+          // check for escape
+          const prev = chars[i - 1];
+          if (prev !== "\\") inSingle = !inSingle;
+        } else if (ch === '"' && !inSingle) {
+          const prev = chars[i - 1];
+          if (prev !== "\\") inDouble = !inDouble;
+        }
+      }
+      i++;
+      continue;
+    }
+
+    // Normal bracket parsing
+    if (ch === "(" || ch === "[" || ch === "{") {
+      stack.push({ ch, idx: i });
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      if (stack.length === 0) {
+        // stray closer: try to ignore (leave as-is)
+      } else {
+        const top = stack[stack.length - 1];
+        const expected = openToClose[top.ch];
+        if (ch === expected) {
+          stack.pop();
+        } else {
+          // mismatch: replace this closer with the expected one to balance the last opener
+          chars[i] = expected;
+          stack.pop();
+        }
+      }
+    }
+    i++;
+  }
+
+  // append missing closers for any remaining openers
+  if (stack.length > 0) {
+    for (let j = stack.length - 1; j >= 0; j--) {
+      const expected = openToClose[stack[j].ch];
+      chars.push(expected);
+    }
+  }
+
+  return chars.join("");
+};
+
 app.post("/api/execute-manim", async (req, res) => {
   const { code } = req.body;
 
@@ -194,7 +310,6 @@ app.post("/api/execute-manim", async (req, res) => {
   try {
     await ensureDirectories();
 
-    // Generate unique filename
     const timestamp = Date.now();
     const fileName = `animation_${timestamp}`;
     const tempFilePath = path.join(__dirname, "temp", `${fileName}.py`);
@@ -205,15 +320,86 @@ app.post("/api/execute-manim", async (req, res) => {
 
     sendProgress(10, "Preparing Python file");
 
-    // Write Python code to temporary file
+    // write original code
     await fs.writeFile(tempFilePath, code, "utf8");
     console.log("Written code to temp file");
 
-    // Get the correct Manim command
+    // Attempt quick automatic bracket fixes (non-destructive) before running Manim
+    try {
+      const originalSource = await fs.readFile(tempFilePath, "utf8");
+      const fixedSource = smartBalanceBrackets(originalSource);
+
+      if (fixedSource !== originalSource) {
+        await fs.writeFile(tempFilePath, fixedSource, "utf8");
+        console.log(
+          "Applied automatic bracket/paren balancing fixes to temp file"
+        );
+        sendProgress(
+          15,
+          "Applied automatic syntax fixes (brackets/parentheses)"
+        );
+      }
+    } catch (fixErr) {
+      console.warn("Automatic bracket fixer failed:", fixErr);
+    }
+
+    // NEW: run a Python syntax check (py_compile) before invoking Manim
+    try {
+      const compileCheck = spawnSync(
+        "python",
+        ["-m", "py_compile", tempFilePath],
+        {
+          cwd: outputDir,
+          encoding: "utf8",
+        }
+      );
+
+      if (compileCheck.status !== 0) {
+        // Try re-applying smart balancer once more (in case previous fix didn't run)
+        try {
+          const src = await fs.readFile(tempFilePath, "utf8");
+          const reFixed = smartBalanceBrackets(src);
+          if (reFixed !== src) {
+            await fs.writeFile(tempFilePath, reFixed, "utf8");
+            const recompile = spawnSync(
+              "python",
+              ["-m", "py_compile", tempFilePath],
+              { encoding: "utf8" }
+            );
+            if (recompile.status !== 0) {
+              const stderr = recompile.stderr || compileCheck.stderr || "";
+              console.error("Python compile failed after fixes:", stderr);
+              sendError(`Python syntax error:\n${stderr}`);
+              return;
+            } else {
+              console.log("File compiles after re-fix, proceeding to Manim");
+              sendProgress(17, "Syntax fixes applied, ready for rendering");
+            }
+          } else {
+            const stderr = compileCheck.stderr || compileCheck.stdout || "";
+            console.error("Python compile failed:", stderr);
+            sendError(`Python syntax error:\n${stderr}`);
+            return;
+          }
+        } catch (err) {
+          console.error("Re-fix attempt failed:", err);
+          const stderr = compileCheck.stderr || compileCheck.stdout || "";
+          sendError(`Python syntax error:\n${stderr}`);
+          return;
+        }
+      } else {
+        console.log("Python syntax check passed");
+      }
+    } catch (err) {
+      console.warn(
+        "Failed to run python -m py_compile; proceeding to Manim (will surface errors):",
+        err
+      );
+    }
+
     const manimCommand = await getManimCommand();
     console.log("Using Manim command:", manimCommand);
 
-    // Check if Manim is available
     const manimAvailable = await checkManimAvailability();
 
     if (!manimAvailable) {
@@ -241,10 +427,11 @@ app.post("/api/execute-manim", async (req, res) => {
 
     sendProgress(20, "Starting Manim rendering");
 
-    // Build the full command arguments
+    // Build args for Manim - remove preview flag (-p) so system media player won't open
+    // use -ql (quick low) or -qm (medium) depending on desired quality.
     const args = [
       ...manimCommand.slice(1),
-      "-pql",
+      "-ql",
       "--output_file",
       fileName,
       tempFilePath,
@@ -253,7 +440,6 @@ app.post("/api/execute-manim", async (req, res) => {
 
     console.log("Executing command:", command, args);
 
-    // Execute Manim command
     const manimProcess = spawn(command, args, {
       cwd: outputDir,
       stdio: ["pipe", "pipe", "pipe"],
@@ -313,29 +499,36 @@ app.post("/api/execute-manim", async (req, res) => {
 
         sendProgress(85, "Searching for generated video...");
 
-        // Find the generated video file
-        const videoFiles = await fs.readdir(outputDir);
-        console.log("Files in output directory:", videoFiles);
+        // Search for video files recursively in the media directory
+        const videoFiles = await findVideoFiles(outputDir, fileName);
+        console.log("Found video files:", videoFiles);
 
-        const videoFile = videoFiles.find(
-          (file) => file.includes(fileName) && file.endsWith(".mp4")
-        );
+        if (videoFiles.length === 0) {
+          // Fallback: list all files in output directory for debugging
+          const allFiles = await fs.readdir(outputDir);
+          console.log("All files in output directory:", allFiles);
 
-        if (!videoFile) {
-          const errorMsg = `Video file not found after rendering. Expected file containing: ${fileName}. Found files: ${videoFiles.join(
-            ", "
-          )}`;
+          const errorMsg = `Video file not found after rendering. Expected file containing: ${fileName}. No video files found in media directory.`;
           console.error(errorMsg);
           sendError(errorMsg);
           return;
         }
 
-        sendProgress(95, "Video file found, finalizing...");
+        // Use the first found video file
+        const videoPath = videoFiles[0];
+        const relativePath = path.relative(outputDir, videoPath);
+        const videoUrl = `/videos/${relativePath.replace(/\\/g, "/")}`;
 
-        const videoPath = path.join(outputDir, videoFile);
-        const videoUrl = `/videos/${videoFile}`;
+        console.log("Video generated successfully at:", videoPath);
+        console.log("Video URL:", videoUrl);
 
-        console.log("Video generated successfully:", videoFile);
+        sendProgress(95, "Video file found, preparing response...");
+
+        // Read the video file to get its size info
+        const stats = await fs.stat(videoPath);
+        console.log(
+          `Video file size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`
+        );
 
         sendProgress(100, "Video ready!");
 
@@ -344,9 +537,10 @@ app.post("/api/execute-manim", async (req, res) => {
           sendComplete({
             success: true,
             videoUrl: `http://localhost:${PORT}${videoUrl}`,
-            videoPath,
+            videoPath: videoPath,
             logs,
             code: code,
+            fileSize: stats.size,
           });
         }, 500);
       } catch (error) {

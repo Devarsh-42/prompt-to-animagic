@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Copy, Download, Play, Loader2, Code2, Video } from "lucide-react";
+import { Copy, Download, Play, Loader2, Code2, Video, Cloud, HardDrive } from "lucide-react";
 import { toast } from "sonner";
 
 interface VideoPreviewProps {
@@ -15,6 +15,7 @@ interface VideoPreviewProps {
 
 const VideoPreview = ({ videoUrl, code, isGenerating }: VideoPreviewProps) => {
   const [activeTab, setActiveTab] = useState<"video" | "code">("video");
+  const [downloadLoading, setDownloadLoading] = useState(false);
 
   const copyCode = () => {
     if (code) {
@@ -23,18 +24,37 @@ const VideoPreview = ({ videoUrl, code, isGenerating }: VideoPreviewProps) => {
     }
   };
 
-  const downloadVideo = () => {
-    if (videoUrl) {
+  const downloadVideo = async () => {
+    if (!videoUrl) return;
+    
+    setDownloadLoading(true);
+    try {
+      const response = await fetch(videoUrl);
+      if (!response.ok) throw new Error('Download failed');
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      
       const link = document.createElement("a");
-      link.href = videoUrl;
+      link.href = url;
       link.download = `manim_animation_${Date.now()}.mp4`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      toast.success("Video download started!");
+      
+      window.URL.revokeObjectURL(url);
+      toast.success("Video download completed!");
+    } catch (error) {
+      console.error('Download error:', error);
+      toast.error("Download failed. Please try again.");
+    } finally {
+      setDownloadLoading(false);
     }
   };
 
+  // Check if video is from cloud storage
+  const isCloudVideo = videoUrl?.includes('supabase') || videoUrl?.includes('storage');
+  
   // Show loading state while generating
   if (isGenerating) {
     return (
@@ -49,7 +69,7 @@ const VideoPreview = ({ videoUrl, code, isGenerating }: VideoPreviewProps) => {
               <div className="text-center space-y-2">
                 <h3 className="text-xl font-semibold">Generating Your Animation</h3>
                 <p className="text-muted-foreground max-w-md">
-                  AI is analyzing your prompt and creating beautiful Manim code.
+                  AI is analyzing your prompt and creating beautiful Manim code. 
                   This usually takes 30-60 seconds.
                 </p>
               </div>
@@ -98,13 +118,13 @@ const VideoPreview = ({ videoUrl, code, isGenerating }: VideoPreviewProps) => {
             </CardTitle>
             <div className="flex items-center gap-2">
               {videoUrl && (
-                <Badge variant="secondary" className="bg-green-100 text-green-800">
-                  <Video className="h-3 w-3 mr-1" />
-                  Video Ready
+                <Badge variant="secondary" className={isCloudVideo ? "bg-green-100 text-green-800" : "bg-blue-100 text-blue-800"}>
+                  {isCloudVideo ? <Cloud className="h-3 w-3 mr-1" /> : <HardDrive className="h-3 w-3 mr-1" />}
+                  {isCloudVideo ? "Cloud Storage" : "Local"}
                 </Badge>
               )}
               {code && (
-                <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                <Badge variant="secondary" className="bg-purple-100 text-purple-800">
                   <Code2 className="h-3 w-3 mr-1" />
                   Code Generated
                 </Badge>
@@ -133,16 +153,31 @@ const VideoPreview = ({ videoUrl, code, isGenerating }: VideoPreviewProps) => {
                       src={videoUrl}
                       controls
                       className="w-full h-full object-contain"
-                      poster="/api/placeholder/800/450"
+                      crossOrigin="anonymous"
                     >
                       Your browser does not support the video tag.
                     </video>
                   </div>
-                  <div className="flex justify-center">
-                    <Button onClick={downloadVideo} size="lg" className="gap-2">
-                      <Download className="h-4 w-4" />
-                      Download Video
+                  <div className="flex justify-center gap-3">
+                    <Button 
+                      onClick={downloadVideo} 
+                      size="lg" 
+                      className="gap-2"
+                      disabled={downloadLoading}
+                    >
+                      {downloadLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="h-4 w-4" />
+                      )}
+                      {downloadLoading ? "Downloading..." : "Download Video"}
                     </Button>
+                    {isCloudVideo && (
+                      <div className="flex items-center text-sm text-green-600">
+                        <Cloud className="h-4 w-4 mr-1" />
+                        Stored in cloud
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : (

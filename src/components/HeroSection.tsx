@@ -37,13 +37,13 @@ const HeroSection = ({ onCTAClick }: HeroSectionProps) => {
             Start Creating
             <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />
           </Button>
-          <Button
+            <Button
             size="lg"
             variant="outline"
-            className="text-white border-white/20 hover:bg-white/10"
-          >
+            className="bg-black text-white border-white/20 hover:bg-white/10"
+            >
             View Examples
-          </Button>
+            </Button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-3xl mx-auto">

@@ -1,48 +1,51 @@
-import * as React from "react"
-import * as AvatarPrimitive from "@radix-ui/react-avatar"
+import React from "react";
 
-import { cn } from "@/lib/utils"
+interface AvatarProps {
+  name?: string;
+  src?: string;
+  size?: number; // px
+  className?: string;
+  alt?: string;
+}
 
-const Avatar = React.forwardRef<
-  React.ElementRef<typeof AvatarPrimitive.Root>,
-  React.ComponentPropsWithoutRef<typeof AvatarPrimitive.Root>
->(({ className, ...props }, ref) => (
-  <AvatarPrimitive.Root
-    ref={ref}
-    className={cn(
-      "relative flex h-10 w-10 shrink-0 overflow-hidden rounded-full",
-      className
-    )}
-    {...props}
-  />
-))
-Avatar.displayName = AvatarPrimitive.Root.displayName
+/**
+ * Simple avatar that shows user image if provided,
+ * otherwise renders the first letter of the name with a visible background.
+ */
+const Avatar: React.FC<AvatarProps> = ({ name, src, size = 40, className = "", alt }) => {
+  const initial = name ? name.trim().charAt(0).toUpperCase() : "?";
+  const dimension = `${size}px`;
 
-const AvatarImage = React.forwardRef<
-  React.ElementRef<typeof AvatarPrimitive.Image>,
-  React.ComponentPropsWithoutRef<typeof AvatarPrimitive.Image>
->(({ className, ...props }, ref) => (
-  <AvatarPrimitive.Image
-    ref={ref}
-    className={cn("aspect-square h-full w-full", className)}
-    {...props}
-  />
-))
-AvatarImage.displayName = AvatarPrimitive.Image.displayName
+  const wrapperStyle: React.CSSProperties = {
+    width: dimension,
+    height: dimension,
+    lineHeight: dimension,
+    fontSize: Math.max(12, Math.floor(size / 2.5)),
+  };
 
-const AvatarFallback = React.forwardRef<
-  React.ElementRef<typeof AvatarPrimitive.Fallback>,
-  React.ComponentPropsWithoutRef<typeof AvatarPrimitive.Fallback>
->(({ className, ...props }, ref) => (
-  <AvatarPrimitive.Fallback
-    ref={ref}
-    className={cn(
-      "flex h-full w-full items-center justify-center rounded-full bg-muted",
-      className
-    )}
-    {...props}
-  />
-))
-AvatarFallback.displayName = AvatarPrimitive.Fallback.displayName
+  return (
+    <div
+      title={name}
+      aria-label={name || "User avatar"}
+      style={wrapperStyle}
+      className={`inline-flex items-center justify-center rounded-full overflow-hidden border border-white/20 ${className}`}
+    >
+      {src ? (
+        <img src={src} alt={alt || name || "avatar"} className="w-full h-full object-cover" />
+      ) : (
+        <div
+          className="w-full h-full flex items-center justify-center font-medium text-white"
+          style={{
+            background:
+              "linear-gradient(135deg, #7C3AED 0%, #EC4899 100%)", // visible gradient on dark bg
+            boxShadow: "inset 0 -2px 6px rgba(0,0,0,0.25)",
+          }}
+        >
+          {initial}
+        </div>
+      )}
+    </div>
+  );
+};
 
-export { Avatar, AvatarImage, AvatarFallback }
+export default Avatar;

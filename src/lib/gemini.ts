@@ -5,7 +5,7 @@ export interface GeminiResponse {
 
 export const generateManimCode = async (
   prompt: string,
-  model: string = "gemini-1.5-pro"
+  model: string = "gemini-2.0-flash"
 ): Promise<GeminiResponse> => {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   
